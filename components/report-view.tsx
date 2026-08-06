@@ -18,7 +18,7 @@ export function ReportView({ report }: { report: AiReport | null }) {
     return (
       <div className="empty-state compact">
         <strong>Nenhum relatório gerado ainda.</strong>
-        <span>A análise será produzida com pesquisa atual e fontes rastreáveis.</span>
+        <span>A análise mostrará claramente se utilizou pesquisa web ou apenas os dados de mercado disponíveis.</span>
       </div>
     );
   }
@@ -32,6 +32,7 @@ export function ReportView({ report }: { report: AiReport | null }) {
         </div>
         <small>{formatDate(report.generatedAt)}</small>
       </header>
+      {report.notice && <div className="notice info">{report.notice}</div>}
       <div className="report-body">{report.text.split("\n").map(renderLine)}</div>
       {!!report.sources.length && (
         <footer>

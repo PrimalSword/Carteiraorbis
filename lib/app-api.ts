@@ -10,12 +10,15 @@ export interface AppApiResult<T> {
 type JsonObject = Record<string, unknown>;
 
 const systemInstruction = `Você é o motor de inteligência da Carteira Orbis, uma plataforma informativa de acompanhamento de investimentos.
-Sua função é pesquisar fontes atuais, organizar dados e explicar fatos, riscos, mudanças e hipóteses. Não emita ordem de compra ou venda, preço-alvo, promessa de retorno ou recomendação individualizada.
-Priorize fontes oficiais e primárias: CVM, B3, administrador, gestor, relações com investidores, fatos relevantes, relatórios gerenciais, demonstrações financeiras e comunicados oficiais. Use imprensa confiável somente como complemento.
+Sua função é organizar dados e explicar fatos, riscos, mudanças e hipóteses. Não emita ordem de compra ou venda, preço-alvo, promessa de retorno ou recomendação individualizada.
+Quando houver pesquisa web, priorize fontes oficiais e primárias: CVM, B3, administrador, gestor, relações com investidores, fatos relevantes, relatórios gerenciais, demonstrações financeiras e comunicados oficiais. Use imprensa confiável apenas como complemento.
 Separe claramente: FATO OFICIAL, CÁLCULO/COMPARAÇÃO, INTERPRETAÇÃO e PONTO DE ATENÇÃO.
-Escreva em português brasileiro, com datas absolutas, linguagem clara e concisa. Sempre informe quando um dado não foi localizado ou não pôde ser confirmado.
+Escreva em português brasileiro, com datas absolutas, linguagem clara e concisa. Informe quando um dado não foi localizado ou não pôde ser confirmado.
 Estruture a resposta em Markdown com os títulos: Resumo executivo; O que mudou recentemente; Indicadores e evolução; Comparação histórica; Riscos e pontos de atenção; O que acompanhar; Fontes consultadas.
-Não use tabelas excessivamente largas. Cite as fontes próximas às afirmações e jamais invente números.`;
+Não use tabelas excessivamente largas e jamais invente números.`;
+
+const geminiQuotaMessage =
+  "A chave do Gemini foi aceita, mas o projeto não tem cota disponível para pesquisa com Google Search. No plano gratuito, desative ‘Pesquisar na internet com Google Search’ na aba Conta. Para relatórios com notícias e documentos atuais, ative o faturamento do projeto Gemini ou use GPT com pesquisa web.";
 
 function parseData(value: unknown): JsonObject {
   if (value && typeof value === "object") return value as JsonObject;
@@ -27,6 +30,23 @@ function parseData(value: unknown): JsonObject {
     }
   }
   return {};
+}
+
+function payloadMessage(payload: JsonObject, fallback: string): string {
+  const error = payload.error;
+  if (error && typeof error === "object") {
+    const message = (error as JsonObject).message;
+    if (message) return String(message);
+  }
+  if (typeof error === "string" && error) return error;
+  if (payload.message) return String(payload.message);
+  return fallback;
+}
+
+function isQuotaFailure(result: AppApiResult<JsonObject>): boolean {
+  if (result.status === 429) return true;
+  const message = payloadMessage(result.data, "").toLowerCase();
+  return message.includes("quota") || message.includes("resource_exhausted");
 }
 
 async function nativeRequest(
@@ -71,7 +91,9 @@ function symbolsFrom(body: JsonObject, limit: number): string[] {
 
 async function nativeQuotes(body: JsonObject): Promise<AppApiResult<JsonObject>> {
   const symbols = symbolsFrom(body, 30);
-  if (!symbols.length) return { ok: false, status: 400, data: { error: "Informe ao menos um ticker." } };
+  if (!symbols.length) {
+    return { ok: false, status: 400, data: { error: "Informe ao menos um ticker." } };
+  }
 
   const token = String(body.token ?? "").trim();
   const query = new URLSearchParams({ fundamental: "false", dividends: "false" });
@@ -84,7 +106,7 @@ async function nativeQuotes(body: JsonObject): Promise<AppApiResult<JsonObject>>
       ...result,
       data: {
         ...result.data,
-        error: String(result.data.message ?? result.data.error ?? "Não foi possível consultar as cotações."),
+        error: payloadMessage(result.data, "Não foi possível consultar as cotações."),
       },
     };
   }
@@ -121,7 +143,9 @@ function normalizePoint(value: unknown) {
 
 async function nativeHistory(body: JsonObject): Promise<AppApiResult<JsonObject>> {
   const symbols = symbolsFrom(body, 20);
-  if (!symbols.length) return { ok: false, status: 400, data: { error: "Informe ao menos um ticker." } };
+  if (!symbols.length) {
+    return { ok: false, status: 400, data: { error: "Informe ao menos um ticker." } };
+  }
 
   const token = String(body.token ?? "").trim();
   const query = new URLSearchParams({
@@ -139,7 +163,7 @@ async function nativeHistory(body: JsonObject): Promise<AppApiResult<JsonObject>
       ...result,
       data: {
         ...result.data,
-        error: String(result.data.message ?? result.data.error ?? "Não foi possível consultar o histórico."),
+        error: payloadMessage(result.data, "Não foi possível consultar o histórico."),
       },
     };
   }
@@ -160,14 +184,22 @@ async function nativeHistory(body: JsonObject): Promise<AppApiResult<JsonObject>
 
 function buildPrompt(body: JsonObject): string {
   const years = Math.min(Math.max(Number(body.compareYears ?? 3), 1), 10);
+  const webSearch = body.webSearch !== false;
+  const marketContext = body.marketContext
+    ? `\n\nDADOS DE MERCADO FORNECIDOS PELO APLICATIVO:\n${JSON.stringify(body.marketContext, null, 2)}`
+    : "";
+  const sourceRule = webSearch
+    ? "Pesquise fontes atuais e cite as fontes consultadas próximas às afirmações."
+    : "Não há pesquisa web nesta solicitação. Use somente os dados fornecidos e o conhecimento do modelo. Não apresente notícias, fatos relevantes ou acontecimentos recentes como confirmados sem fonte; declare claramente essa limitação.";
+
   if (body.mode === "portfolio") {
-    return `Analise a carteira abaixo como diagnóstico educacional de exposição, concentração, correlação aparente, risco e eventos recentes. Não diga o que comprar ou vender.\n\nCARTEIRA:\n${JSON.stringify(body.portfolio, null, 2)}`;
+    return `${sourceRule}\nAnalise a carteira abaixo como diagnóstico educacional de exposição, concentração, correlação aparente, risco e eventos relevantes. Não diga o que comprar ou vender.\n\nCARTEIRA:\n${JSON.stringify(body.portfolio, null, 2)}${marketContext}`;
   }
   if (body.mode === "question") {
-    return `Responda à pergunta usando a carteira quando relevante e pesquise fatos atuais.\n\nPERGUNTA: ${String(body.question ?? "")}\n\nCARTEIRA:\n${JSON.stringify(body.portfolio, null, 2)}`;
+    return `${sourceRule}\nResponda à pergunta usando a carteira quando relevante.\n\nPERGUNTA: ${String(body.question ?? "")}\n\nCARTEIRA:\n${JSON.stringify(body.portfolio, null, 2)}${marketContext}`;
   }
   const ticker = String(body.ticker ?? "").trim().toUpperCase();
-  return `Produza um dossiê vivo e atual do ativo brasileiro ${ticker}. Pesquise fatos relevantes, relatórios, novos imóveis ou galpões, aquisições, alienações, emissões, dívida, vacância, locatários, contratos, rendimentos, resultados, mudanças de gestão e eventos regulatórios. Compare o momento atual com os últimos ${years} anos e destaque o que mudou. Não conclua com recomendação de compra ou venda.`;
+  return `${sourceRule}\nProduza um dossiê do ativo brasileiro ${ticker}. Analise fatos relevantes, relatórios, imóveis ou galpões, aquisições, alienações, emissões, dívida, vacância, locatários, contratos, rendimentos, resultados, mudanças de gestão e eventos regulatórios quando houver dados confirmados. Compare o momento disponível com os últimos ${years} anos e destaque o que mudou. Não conclua com recomendação de compra ou venda.${marketContext}`;
 }
 
 function collectSources(value: unknown, output: AiSource[] = []): AiSource[] {
@@ -226,7 +258,9 @@ function geminiText(payload: JsonObject): string {
 async function nativeAnalysis(body: JsonObject): Promise<AppApiResult<JsonObject>> {
   const provider: AiProvider = body.provider === "gemini" ? "gemini" : "openai";
   const apiKey = String(body.apiKey ?? "").trim();
-  if (apiKey.length < 10) return { ok: false, status: 400, data: { error: "Informe uma chave de API válida na aba Conta." } };
+  if (apiKey.length < 10) {
+    return { ok: false, status: 400, data: { error: "Informe uma chave de API válida na aba Conta." } };
+  }
   if (body.mode === "asset" && !String(body.ticker ?? "").trim()) {
     return { ok: false, status: 400, data: { error: "Informe o ticker do ativo." } };
   }
@@ -234,7 +268,8 @@ async function nativeAnalysis(body: JsonObject): Promise<AppApiResult<JsonObject
     return { ok: false, status: 400, data: { error: "Escreva uma pergunta." } };
   }
 
-  const prompt = buildPrompt(body);
+  const webSearch = provider === "openai" || body.webSearch === true;
+  const prompt = buildPrompt({ ...body, webSearch });
   const model = String(body.model ?? (provider === "openai" ? "gpt-5-mini" : "gemini-3.5-flash"));
   let response: AppApiResult<JsonObject>;
   let text = "";
@@ -253,13 +288,18 @@ async function nativeAnalysis(body: JsonObject): Promise<AppApiResult<JsonObject
       timeout: 60_000,
     });
     text = openAiText(response.data);
-  } else {
+  } else if (webSearch) {
     response = await nativeRequest("https://generativelanguage.googleapis.com/v1beta/interactions", {
       method: "POST",
       headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
       data: { model, input: `${systemInstruction}\n\n${prompt}`, tools: [{ type: "google_search" }] },
       timeout: 60_000,
     });
+
+    if (!response.ok && isQuotaFailure(response)) {
+      return { ok: false, status: 429, data: { error: geminiQuotaMessage } };
+    }
+
     if (!response.ok) {
       response = await nativeRequest(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -274,25 +314,52 @@ async function nativeAnalysis(body: JsonObject): Promise<AppApiResult<JsonObject
         },
       );
     }
+
+    if (!response.ok && isQuotaFailure(response)) {
+      return { ok: false, status: 429, data: { error: geminiQuotaMessage } };
+    }
+    text = geminiText(response.data);
+  } else {
+    response = await nativeRequest(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+      {
+        method: "POST",
+        headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+        data: {
+          contents: [{ parts: [{ text: `${systemInstruction}\n\n${prompt}` }] }],
+        },
+        timeout: 60_000,
+      },
+    );
     text = geminiText(response.data);
   }
 
   if (!response.ok) {
-    const error = response.data.error;
-    const message = typeof error === "object" && error ? String((error as JsonObject).message ?? "") : String(error ?? "");
-    return { ...response, data: { ...response.data, error: message || `Falha na API ${provider}.` } };
+    return {
+      ...response,
+      data: {
+        ...response.data,
+        error: payloadMessage(response.data, `Falha na API ${provider === "openai" ? "da OpenAI" : "do Gemini"}.`),
+      },
+    };
   }
-  if (!text.trim()) return { ok: false, status: 502, data: { error: "A IA não retornou texto analisável." } };
+  if (!text.trim()) {
+    return { ok: false, status: 502, data: { error: "A IA não retornou texto analisável." } };
+  }
 
   return {
     ok: true,
     status: 200,
     data: {
       text,
-      sources: collectSources(response.data),
+      sources: webSearch ? collectSources(response.data) : [],
       provider,
       model,
       generatedAt: new Date().toISOString(),
+      webSearchUsed: webSearch,
+      notice: webSearch
+        ? undefined
+        : "Relatório gerado sem pesquisa web. Foram usados os dados de mercado fornecidos pelo aplicativo e o conhecimento do modelo.",
     },
   };
 }

@@ -23,6 +23,19 @@ import type {
   WatchItem,
 } from "@/lib/types";
 
+interface AnalysisInput {
+  mode: "asset" | "portfolio" | "question";
+  ticker?: string;
+  compareYears?: number;
+  question?: string;
+  marketContext?: unknown;
+}
+
+interface MarketRefreshResult {
+  quotes: Record<string, Quote>;
+  history: Record<string, PricePoint[]>;
+}
+
 interface PortfolioContextValue {
   hydrated: boolean;
   transactions: PortfolioTransaction[];
@@ -42,15 +55,13 @@ interface PortfolioContextValue {
   summary: ReturnType<typeof summarizePortfolio>;
   marketLoading: boolean;
   marketError: string;
-  refreshMarket: (range?: "1y" | "5y") => Promise<void>;
+  refreshMarket: (
+    range?: "1y" | "5y",
+    extraSymbols?: string[],
+  ) => Promise<MarketRefreshResult>;
   reports: Record<string, AiReport>;
   setReport: (key: string, report: AiReport) => void;
-  runAnalysis: (input: {
-    mode: "asset" | "portfolio" | "question";
-    ticker?: string;
-    compareYears?: number;
-    question?: string;
-  }) => Promise<AiReport>;
+  runAnalysis: (input: AnalysisInput) => Promise<AiReport>;
   exportData: () => string;
   importData: (raw: string) => void;
   resetAll: () => void;
@@ -62,6 +73,7 @@ const defaultSettings: AccountSettings = {
   provider: "openai",
   openaiModel: "gpt-5-mini",
   geminiModel: "gemini-3.5-flash",
+  geminiWebSearch: false,
   rememberKeys: false,
   displayName: "Investidor",
 };
@@ -100,12 +112,18 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
   const snapshots = useMemo(() => buildPortfolioHistory(transactions, history, quotes), [transactions, history, quotes]);
   const summary = useMemo(() => summarizePortfolio(holdings), [holdings]);
 
-  const refreshMarket = useCallback(async (range: "1y" | "5y" = "1y") => {
+  const refreshMarket = useCallback(async (
+    range: "1y" | "5y" = "1y",
+    extraSymbols: string[] = [],
+  ): Promise<MarketRefreshResult> => {
     const symbols = [...new Set([
       ...transactions.map((item) => item.ticker.toUpperCase()),
       ...watchlist.map((item) => item.ticker.toUpperCase()),
+      ...extraSymbols.map((item) => item.trim().toUpperCase()),
     ])].filter(Boolean);
-    if (!symbols.length) return;
+
+    if (!symbols.length) return { quotes: {}, history: {} };
+
     setMarketLoading(true);
     setMarketError("");
     try {
@@ -118,18 +136,29 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
         history?: Record<string, PricePoint[]>;
         error?: string;
       };
-      if (quoteResponse.ok) {
-        setQuotes(Object.fromEntries((quotePayload.quotes ?? []).map((quote) => [quote.ticker, quote])));
-      }
-      if (historyResponse.ok) setHistory(historyPayload.history ?? {});
+      const quoteMap = Object.fromEntries(
+        (quotePayload.quotes ?? []).map((quote) => [quote.ticker, quote]),
+      ) as Record<string, Quote>;
+      const historyMap = historyPayload.history ?? {};
+
+      if (quoteResponse.ok) setQuotes((current) => ({ ...current, ...quoteMap }));
+      if (historyResponse.ok) setHistory((current) => ({ ...current, ...historyMap }));
+
       if (!quoteResponse.ok && !historyResponse.ok) {
         throw new Error(quotePayload.error || historyPayload.error || "Falha ao consultar o mercado.");
       }
       if (!quoteResponse.ok || !historyResponse.ok) {
         setMarketError(quotePayload.error || historyPayload.error || "Parte dos dados não pôde ser atualizada.");
       }
+
+      return {
+        quotes: quoteResponse.ok ? quoteMap : {},
+        history: historyResponse.ok ? historyMap : {},
+      };
     } catch (error) {
-      setMarketError(error instanceof Error ? error.message : "Falha ao consultar o mercado.");
+      const message = error instanceof Error ? error.message : "Falha ao consultar o mercado.";
+      setMarketError(message);
+      throw new Error(message);
     } finally {
       setMarketLoading(false);
     }
@@ -137,19 +166,14 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!hydrated || !transactions.length) return;
-    void refreshMarket("1y");
+    void refreshMarket("1y").catch(() => undefined);
   }, [hydrated, refreshMarket, transactions.length]);
 
   const setReport = useCallback((key: string, report: AiReport) => {
     setReports((current) => ({ ...current, [key]: report }));
   }, []);
 
-  const runAnalysis = useCallback(async (input: {
-    mode: "asset" | "portfolio" | "question";
-    ticker?: string;
-    compareYears?: number;
-    question?: string;
-  }) => {
+  const runAnalysis = useCallback(async (input: AnalysisInput) => {
     const apiKey = settings.provider === "openai" ? secrets.openaiKey : secrets.geminiKey;
     const model = settings.provider === "openai" ? settings.openaiModel : settings.geminiModel;
     const response = await postAppApi("/api/ai/analyze", {
@@ -157,6 +181,7 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
       provider: settings.provider,
       apiKey,
       model,
+      webSearch: settings.provider === "openai" || settings.geminiWebSearch,
       portfolio: holdings.map((holding) => ({
         ticker: holding.ticker,
         classe: holding.assetClass,
@@ -170,7 +195,16 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
     });
     if (!response.ok) throw new Error(response.data.error || "Não foi possível concluir a análise.");
     return response.data as unknown as AiReport;
-  }, [holdings, secrets.geminiKey, secrets.openaiKey, settings.geminiModel, settings.openaiModel, settings.provider, summary.value]);
+  }, [
+    holdings,
+    secrets.geminiKey,
+    secrets.openaiKey,
+    settings.geminiModel,
+    settings.geminiWebSearch,
+    settings.openaiModel,
+    settings.provider,
+    summary.value,
+  ]);
 
   const exportData = useCallback(() => JSON.stringify({
     version: 1,

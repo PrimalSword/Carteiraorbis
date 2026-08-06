@@ -39,22 +39,30 @@ export function AccountTab() {
           <div className="panel-heading"><div><span className="eyebrow">Provedor</span><h2>Inteligência artificial</h2></div></div>
           <div className="provider-switch">
             <button className={settings.provider === "openai" ? "active" : ""} onClick={() => setSettings((current) => ({ ...current, provider: "openai" as AiProvider }))}><strong>GPT</strong><span>OpenAI · pesquisa na web</span></button>
-            <button className={settings.provider === "gemini" ? "active" : ""} onClick={() => setSettings((current) => ({ ...current, provider: "gemini" as AiProvider }))}><strong>Gemini</strong><span>Google · grounding</span></button>
+            <button className={settings.provider === "gemini" ? "active" : ""} onClick={() => setSettings((current) => ({ ...current, provider: "gemini" as AiProvider }))}><strong>Gemini</strong><span>Google · pesquisa opcional</span></button>
           </div>
           <div className="form-grid single">
             <label><span>Modelo GPT</span><input value={settings.openaiModel} onChange={(e) => setSettings((current) => ({ ...current, openaiModel: e.target.value }))} placeholder="gpt-5-mini" /></label>
-            <label><span>Chave da OpenAI</span><input type="password" autoComplete="off" value={secrets.openaiKey} onChange={(e) => setSecrets((current) => ({ ...current, openaiKey: e.target.value }))} placeholder="sk-…" /></label>
+            <label><span>Chave da OpenAI</span><input type="password" autoComplete="off" value={secrets.openaiKey} onChange={(e) => setSecrets((current) => ({ ...current, openaiKey: e.target.value }))} placeholder="Cole sua chave da OpenAI" /></label>
             <label><span>Modelo Gemini</span><input value={settings.geminiModel} onChange={(e) => setSettings((current) => ({ ...current, geminiModel: e.target.value }))} placeholder="gemini-3.5-flash" /></label>
-            <label><span>Chave do Gemini</span><input type="password" autoComplete="off" value={secrets.geminiKey} onChange={(e) => setSecrets((current) => ({ ...current, geminiKey: e.target.value }))} placeholder="AIza…" /></label>
+            <label><span>Chave do Gemini</span><input type="password" autoComplete="off" value={secrets.geminiKey} onChange={(e) => setSecrets((current) => ({ ...current, geminiKey: e.target.value }))} placeholder="Cole sua chave do Google AI Studio" /></label>
           </div>
-          <label className="checkbox-row"><input type="checkbox" checked={settings.rememberKeys} onChange={(e) => setSettings((current) => ({ ...current, rememberKeys: e.target.checked }))} /><span><strong>Lembrar chaves neste dispositivo</strong><small>Desativado: ficam apenas até a sessão do navegador terminar. Ativado: são salvas localmente neste navegador.</small></span></label>
-          <div className="notice subtle">As chaves são enviadas diretamente ao endpoint do provedor pela rota segura do aplicativo e não são persistidas no servidor.</div>
+
+          {settings.provider === "gemini" && (
+            <>
+              <label className="checkbox-row"><input type="checkbox" checked={settings.geminiWebSearch} onChange={(e) => setSettings((current) => ({ ...current, geminiWebSearch: e.target.checked }))} /><span><strong>Pesquisar na internet com Google Search</strong><small>Requer um projeto Gemini com faturamento ativo. No nível gratuito, mantenha esta opção desativada para evitar erro de cota.</small></span></label>
+              {!settings.geminiWebSearch && <div className="notice info">Modo gratuito: a IA usa as cotações e o histórico obtidos pela brapi, além do conhecimento do modelo. Notícias, fatos relevantes e documentos recentes não serão pesquisados na web.</div>}
+            </>
+          )}
+
+          <label className="checkbox-row"><input type="checkbox" checked={settings.rememberKeys} onChange={(e) => setSettings((current) => ({ ...current, rememberKeys: e.target.checked }))} /><span><strong>Lembrar chaves neste dispositivo</strong><small>Desativado: ficam apenas até a sessão terminar. Ativado: são salvas localmente neste aparelho.</small></span></label>
+          <div className="notice subtle">As chaves são enviadas ao provedor somente durante a solicitação e não são armazenadas em servidores da Carteira Orbis.</div>
         </div>
 
         <div className="panel form-panel">
           <div className="panel-heading"><div><span className="eyebrow">Dados de mercado</span><h2>Cotações da B3</h2></div></div>
           <label><span>Token da brapi.dev</span><input type="password" autoComplete="off" value={secrets.brapiToken} onChange={(e) => setSecrets((current) => ({ ...current, brapiToken: e.target.value }))} placeholder="Token opcional" /></label>
-          <p className="helper">Necessário para consultar livremente cotações e históricos de ações, FIIs, ETFs e BDRs. Sem token, somente os ativos de demonstração disponibilizados pela fonte podem responder.</p>
+          <p className="helper">Usado para consultar cotações e históricos de ações, FIIs, ETFs e BDRs. Sem token, a disponibilidade depende dos limites públicos da fonte.</p>
           <div className="divider" />
           <label><span>Nome exibido</span><input value={settings.displayName} onChange={(e) => setSettings((current) => ({ ...current, displayName: e.target.value }))} /></label>
           <div className="divider" />
@@ -69,7 +77,7 @@ export function AccountTab() {
       </div>
 
       <div className="panel danger-zone">
-        <div><span className="eyebrow">Zona de risco</span><h2>Apagar os dados locais</h2><p>Remove lançamentos, radar, alertas e relatórios deste navegador.</p></div>
+        <div><span className="eyebrow">Zona de risco</span><h2>Apagar os dados locais</h2><p>Remove lançamentos, radar, alertas e relatórios deste dispositivo.</p></div>
         {!dangerOpen ? <button className="button danger" onClick={() => setDangerOpen(true)}>Iniciar limpeza</button> : <div className="row-actions"><button className="button secondary" onClick={() => setDangerOpen(false)}>Cancelar</button><button className="button danger" onClick={() => { resetAll(); setDangerOpen(false); setMessage("Dados locais apagados."); }}>Confirmar exclusão</button></div>}
       </div>
     </section>
