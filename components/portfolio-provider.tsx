@@ -72,8 +72,9 @@ const PortfolioContext = createContext<PortfolioContextValue | null>(null);
 const defaultSettings: AccountSettings = {
   provider: "openai",
   openaiModel: "gpt-5-mini",
-  geminiModel: "gemini-3.5-flash",
-  geminiWebSearch: false,
+  geminiModel: "gemini-2.5-flash",
+  geminiWebSearch: true,
+  geminiSearchVersion: 2,
   rememberKeys: false,
   displayName: "Investidor",
 };
@@ -95,7 +96,22 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
     setTransactions(readJson(STORAGE_KEYS.transactions, []));
     setWatchlist(readJson(STORAGE_KEYS.watchlist, []));
     setAlerts(readJson(STORAGE_KEYS.alerts, []));
-    setSettings({ ...defaultSettings, ...readJson(STORAGE_KEYS.settings, defaultSettings) });
+
+    const savedSettings = readJson(
+      STORAGE_KEYS.settings,
+      {} as Partial<AccountSettings>,
+    );
+    const migratedSettings: Partial<AccountSettings> =
+      savedSettings.geminiSearchVersion === 2
+        ? savedSettings
+        : {
+            ...savedSettings,
+            geminiModel: "gemini-2.5-flash",
+            geminiWebSearch: true,
+            geminiSearchVersion: 2,
+          };
+    setSettings({ ...defaultSettings, ...migratedSettings });
+
     setSecrets(readSecrets());
     setReports(readJson(STORAGE_KEYS.reports, {}));
     setHydrated(true);
@@ -222,7 +238,7 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
     setTransactions(Array.isArray(payload.transactions) ? payload.transactions : []);
     setWatchlist(Array.isArray(payload.watchlist) ? payload.watchlist : []);
     setAlerts(Array.isArray(payload.alerts) ? payload.alerts : []);
-    setSettings({ ...defaultSettings, ...(payload.settings ?? {}) });
+    setSettings({ ...defaultSettings, ...(payload.settings ?? {}), geminiSearchVersion: 2 });
     setReports(payload.reports && typeof payload.reports === "object" ? payload.reports : {});
   }, []);
 
