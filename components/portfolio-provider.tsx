@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { postAppApi } from "@/lib/app-api";
 import { buildHoldings, buildPortfolioHistory, summarizePortfolio } from "@/lib/portfolio";
 import { readJson, readSecrets, STORAGE_KEYS, writeJson, writeSecrets } from "@/lib/storage";
 import type {
@@ -109,21 +110,16 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
     setMarketError("");
     try {
       const [quoteResponse, historyResponse] = await Promise.all([
-        fetch("/api/market/quote", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbols, token: secrets.brapiToken }),
-        }),
-        fetch("/api/market/history", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symbols, token: secrets.brapiToken, range }),
-        }),
+        postAppApi("/api/market/quote", { symbols, token: secrets.brapiToken }),
+        postAppApi("/api/market/history", { symbols, token: secrets.brapiToken, range }),
       ]);
-      const quotePayload = await quoteResponse.json();
-      const historyPayload = await historyResponse.json();
+      const quotePayload = quoteResponse.data as { quotes?: Quote[]; error?: string };
+      const historyPayload = historyResponse.data as {
+        history?: Record<string, PricePoint[]>;
+        error?: string;
+      };
       if (quoteResponse.ok) {
-        setQuotes(Object.fromEntries((quotePayload.quotes ?? []).map((quote: Quote) => [quote.ticker, quote])));
+        setQuotes(Object.fromEntries((quotePayload.quotes ?? []).map((quote) => [quote.ticker, quote])));
       }
       if (historyResponse.ok) setHistory(historyPayload.history ?? {});
       if (!quoteResponse.ok && !historyResponse.ok) {
@@ -156,29 +152,24 @@ export function PortfolioProvider({ children }: { children: ReactNode }) {
   }) => {
     const apiKey = settings.provider === "openai" ? secrets.openaiKey : secrets.geminiKey;
     const model = settings.provider === "openai" ? settings.openaiModel : settings.geminiModel;
-    const response = await fetch("/api/ai/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...input,
-        provider: settings.provider,
-        apiKey,
-        model,
-        portfolio: holdings.map((holding) => ({
-          ticker: holding.ticker,
-          classe: holding.assetClass,
-          quantidade: holding.quantity,
-          precoMedio: holding.averagePrice,
-          precoAtual: holding.currentPrice,
-          valorAtual: holding.currentValue,
-          participacaoPercentual: summary.value ? (holding.currentValue / summary.value) * 100 : 0,
-          resultadoPercentual: holding.profitPercent,
-        })),
-      }),
+    const response = await postAppApi("/api/ai/analyze", {
+      ...input,
+      provider: settings.provider,
+      apiKey,
+      model,
+      portfolio: holdings.map((holding) => ({
+        ticker: holding.ticker,
+        classe: holding.assetClass,
+        quantidade: holding.quantity,
+        precoMedio: holding.averagePrice,
+        precoAtual: holding.currentPrice,
+        valorAtual: holding.currentValue,
+        participacaoPercentual: summary.value ? (holding.currentValue / summary.value) * 100 : 0,
+        resultadoPercentual: holding.profitPercent,
+      })),
     });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Não foi possível concluir a análise.");
-    return payload as AiReport;
+    if (!response.ok) throw new Error(response.data.error || "Não foi possível concluir a análise.");
+    return response.data as unknown as AiReport;
   }, [holdings, secrets.geminiKey, secrets.openaiKey, settings.geminiModel, settings.openaiModel, settings.provider, summary.value]);
 
   const exportData = useCallback(() => JSON.stringify({
