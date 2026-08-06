@@ -4,41 +4,66 @@ import { useEffect, useMemo, useState } from "react";
 import { ReportView } from "@/components/report-view";
 import { usePortfolio } from "@/components/portfolio-provider";
 import { currency, formatPercent } from "@/lib/format";
-import type { AiReport } from "@/lib/types";
+import type { AiReport, PricePoint } from "@/lib/types";
+
+function buildAnnualReturns(points: PricePoint[], years: number) {
+  const grouped = new Map<string, { first: number; last: number }>();
+  for (const point of points) {
+    const year = point.date.slice(0, 4);
+    const current = grouped.get(year);
+    if (!current) grouped.set(year, { first: point.close, last: point.close });
+    else current.last = point.close;
+  }
+  return [...grouped.entries()].map(([year, values]) => ({
+    year,
+    returnPercent: values.first ? ((values.last - values.first) / values.first) * 100 : 0,
+  })).slice(-years);
+}
 
 export function IntelligenceTab({ onNavigate, requestedTicker }: { onNavigate: (tab: string) => void; requestedTicker?: string }) {
-  const { reports, setReport, runAnalysis, quotes, history, secrets, refreshMarket } = usePortfolio();
+  const { reports, setReport, runAnalysis, quotes, history, secrets, settings, refreshMarket } = usePortfolio();
   const [ticker, setTicker] = useState(requestedTicker ?? "");
   useEffect(() => { if (requestedTicker) setTicker(requestedTicker); }, [requestedTicker]);
   const [years, setYears] = useState(3);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [marketWarning, setMarketWarning] = useState("");
   const normalized = ticker.trim().toUpperCase();
   const report = normalized ? reports[`asset:${normalized}`] ?? null : null;
   const quote = quotes[normalized];
   const points = history[normalized] ?? [];
 
-  const yearly = useMemo(() => {
-    const grouped = new Map<string, { first: number; last: number }>();
-    for (const point of points) {
-      const year = point.date.slice(0, 4);
-      const current = grouped.get(year);
-      if (!current) grouped.set(year, { first: point.close, last: point.close });
-      else current.last = point.close;
-    }
-    return [...grouped.entries()].map(([year, values]) => ({
-      year,
-      returnPercent: values.first ? ((values.last - values.first) / values.first) * 100 : 0,
-    })).slice(-years);
-  }, [points, years]);
+  const yearly = useMemo(() => buildAnnualReturns(points, years), [points, years]);
+  const webSearchEnabled = settings.provider === "openai" || settings.geminiWebSearch;
 
   async function generate() {
     if (!normalized) return setError("Informe um ticker.");
     setLoading(true);
     setError("");
+    setMarketWarning("");
+
+    let marketContext: unknown;
     try {
-      if (secrets.brapiToken) await refreshMarket("5y");
-      const result = await runAnalysis({ mode: "asset", ticker: normalized, compareYears: years });
+      const market = await refreshMarket("5y", [normalized]);
+      const assetQuote = market.quotes[normalized];
+      const assetPoints = market.history[normalized] ?? [];
+      marketContext = {
+        fonte: "brapi.dev",
+        cotacao: assetQuote ?? null,
+        retornosAnuais: buildAnnualReturns(assetPoints, years),
+        ultimosPregoes: assetPoints.slice(-30),
+      };
+    } catch (cause) {
+      setMarketWarning(cause instanceof Error ? cause.message : "Os dados de mercado não puderam ser atualizados.");
+    }
+
+    try {
+      const result = await runAnalysis({
+        mode: "asset",
+        ticker: normalized,
+        compareYears: years,
+        marketContext,
+      });
       setReport(`asset:${normalized}`, result);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Falha ao gerar o relatório.");
@@ -60,7 +85,8 @@ export function IntelligenceTab({ onNavigate, requestedTicker }: { onNavigate: (
           <button className="button primary search-button" onClick={() => void generate()} disabled={loading}>{loading ? "Pesquisando…" : "Gerar relatório completo"}</button>
         </div>
         {error && <div className="field-error">{error}</div>}
-        <p className="helper">A IA pesquisa fontes atuais, compara períodos e separa fatos de interpretações. O relatório não é recomendação de investimento.</p>
+        {marketWarning && <div className="notice subtle">Cotação: {marketWarning} O relatório da IA continuará com os dados disponíveis.</div>}
+        <p className="helper">{webSearchEnabled ? "A IA pesquisa fontes atuais, compara períodos e separa fatos de interpretações." : "Modo Gemini gratuito: a IA usa cotações e histórico disponíveis, sem pesquisar notícias ou documentos na web."} O relatório não é recomendação de investimento.</p>
       </div>
 
       {normalized && (
