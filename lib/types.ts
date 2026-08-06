@@ -77,6 +77,7 @@ export interface AccountSettings {
   provider: AiProvider;
   openaiModel: string;
   geminiModel: string;
+  geminiWebSearch: boolean;
   rememberKeys: boolean;
   displayName: string;
 }
@@ -98,6 +99,8 @@ export interface AiReport {
   provider: AiProvider;
   model: string;
   generatedAt: string;
+  webSearchUsed?: boolean;
+  notice?: string;
 }
 
 export interface PortfolioSnapshot {
