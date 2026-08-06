@@ -1,6 +1,9 @@
 node_modules
 .next
 out
+dist-mobile
+android
+release
 .env
 .env.local
 *.log
