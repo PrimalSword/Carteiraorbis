@@ -30,6 +30,8 @@ export function AccountTab() {
     }
   }
 
+  const hybridMode = settings.geminiModel.startsWith("gemini-3") && settings.geminiWebSearch;
+
   return (
     <section className="tab-stack">
       <div className="page-heading"><div><span className="eyebrow">Preferências e segurança</span><h1>Conta</h1><p>Escolha o provedor de IA, configure as chaves e gerencie seus dados locais.</p></div></div>
@@ -39,19 +41,28 @@ export function AccountTab() {
           <div className="panel-heading"><div><span className="eyebrow">Provedor</span><h2>Inteligência artificial</h2></div></div>
           <div className="provider-switch">
             <button className={settings.provider === "openai" ? "active" : ""} onClick={() => setSettings((current) => ({ ...current, provider: "openai" as AiProvider }))}><strong>GPT</strong><span>OpenAI · pesquisa na web</span></button>
-            <button className={settings.provider === "gemini" ? "active" : ""} onClick={() => setSettings((current) => ({ ...current, provider: "gemini" as AiProvider }))}><strong>Gemini</strong><span>Google · pesquisa opcional</span></button>
+            <button className={settings.provider === "gemini" ? "active" : ""} onClick={() => setSettings((current) => ({ ...current, provider: "gemini" as AiProvider }))}><strong>Gemini</strong><span>Google · pesquisa gratuita disponível</span></button>
           </div>
           <div className="form-grid single">
             <label><span>Modelo GPT</span><input value={settings.openaiModel} onChange={(e) => setSettings((current) => ({ ...current, openaiModel: e.target.value }))} placeholder="gpt-5-mini" /></label>
             <label><span>Chave da OpenAI</span><input type="password" autoComplete="off" value={secrets.openaiKey} onChange={(e) => setSecrets((current) => ({ ...current, openaiKey: e.target.value }))} placeholder="Cole sua chave da OpenAI" /></label>
-            <label><span>Modelo Gemini</span><input value={settings.geminiModel} onChange={(e) => setSettings((current) => ({ ...current, geminiModel: e.target.value }))} placeholder="gemini-3.5-flash" /></label>
+            <label>
+              <span>Modelo Gemini</span>
+              <select value={settings.geminiModel} onChange={(e) => setSettings((current) => ({ ...current, geminiModel: e.target.value, geminiSearchVersion: 2 }))}>
+                <option value="gemini-2.5-flash">2.5 Flash — pesquisa gratuita recomendada</option>
+                <option value="gemini-2.5-flash-lite">2.5 Flash-Lite — mais rápido e econômico</option>
+                <option value="gemini-3.5-flash">3.5 Flash — modo híbrido</option>
+              </select>
+            </label>
             <label><span>Chave do Gemini</span><input type="password" autoComplete="off" value={secrets.geminiKey} onChange={(e) => setSecrets((current) => ({ ...current, geminiKey: e.target.value }))} placeholder="Cole sua chave do Google AI Studio" /></label>
           </div>
 
           {settings.provider === "gemini" && (
             <>
-              <label className="checkbox-row"><input type="checkbox" checked={settings.geminiWebSearch} onChange={(e) => setSettings((current) => ({ ...current, geminiWebSearch: e.target.checked }))} /><span><strong>Pesquisar na internet com Google Search</strong><small>Requer um projeto Gemini com faturamento ativo. No nível gratuito, mantenha esta opção desativada para evitar erro de cota.</small></span></label>
-              {!settings.geminiWebSearch && <div className="notice info">Modo gratuito: a IA usa as cotações e o histórico obtidos pela brapi, além do conhecimento do modelo. Notícias, fatos relevantes e documentos recentes não serão pesquisados na web.</div>}
+              <label className="checkbox-row"><input type="checkbox" checked={settings.geminiWebSearch} onChange={(e) => setSettings((current) => ({ ...current, geminiWebSearch: e.target.checked, geminiSearchVersion: 2 }))} /><span><strong>Pesquisar na internet com Google Search</strong><small>Nos modelos Gemini 2.5, o nível gratuito oferece até 500 pesquisas fundamentadas por dia, compartilhadas entre Flash e Flash-Lite.</small></span></label>
+              {settings.geminiWebSearch && !hybridMode && <div className="notice info">Modo gratuito com pesquisa: o Gemini 2.5 consulta a web e produz o relatório em uma única chamada. O limite diário pertence ao projeto da chave.</div>}
+              {hybridMode && <div className="notice info">Modo híbrido: o Gemini 2.5 Flash pesquisa a web gratuitamente e o Gemini 3.5 Flash organiza o relatório final. As duas etapas usam a mesma chave.</div>}
+              {!settings.geminiWebSearch && <div className="notice info">Pesquisa desativada: a IA usará somente os dados da brapi e o conhecimento do modelo, sem confirmar acontecimentos recentes.</div>}
             </>
           )}
 

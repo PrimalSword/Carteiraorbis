@@ -36,7 +36,7 @@ Estruture a resposta em Markdown com os títulos: Resumo executivo; O que mudou 
 Não use tabelas excessivamente largas e jamais invente números.`;
 
 const geminiQuotaMessage =
-  "A chave do Gemini foi aceita, mas o projeto não tem cota disponível para pesquisa com Google Search. No plano gratuito, desative ‘Pesquisar na internet com Google Search’ na aba Conta. Para relatórios com notícias e documentos atuais, ative o faturamento do projeto Gemini ou use GPT com pesquisa web.";
+  "A chave do Gemini foi aceita, mas a cota gratuita de pesquisa do projeto foi atingida ou não está disponível. O Gemini 2.5 Flash e o Flash-Lite compartilham o limite gratuito de até 500 pesquisas fundamentadas por dia. Aguarde a renovação da cota, confira o projeto vinculado à chave ou desative temporariamente a pesquisa web na aba Conta.";
 
 function buildPrompt(body: AnalyzeRequest, webSearch: boolean): string {
   const years = Math.min(Math.max(body.compareYears ?? 3, 1), 10);
@@ -145,7 +145,11 @@ async function analyzeWithOpenAI(apiKey: string, model: string, prompt: string) 
   if (!response.ok) {
     throw new ApiError(payloadMessage(payload, "Falha na API da OpenAI."), response.status);
   }
-  return { text: openAiText(payload), sources: uniqueSources(collectSources(payload)) };
+  return {
+    text: openAiText(payload),
+    sources: uniqueSources(collectSources(payload)),
+    notice: undefined as string | undefined,
+  };
 }
 
 async function geminiGenerate(
@@ -170,6 +174,13 @@ async function geminiGenerate(
   return { response, payload };
 }
 
+function synthesisPrompt(researchText: string, sources: AiSource[]): string {
+  const sourceList = sources.length
+    ? sources.map((source, index) => `${index + 1}. ${source.title}: ${source.url}`).join("\n")
+    : "Nenhuma URL estruturada foi recuperada; preserve apenas afirmações presentes na pesquisa.";
+  return `Redija o relatório final usando exclusivamente a pesquisa fundamentada abaixo e os dados de mercado nela incluídos. Preserve datas, números, ressalvas e URLs. Não acrescente acontecimentos que não estejam na pesquisa. Diferencie fatos, cálculos, interpretações e pontos de atenção.\n\nPESQUISA FUNDAMENTADA:\n${researchText}\n\nFONTES RECUPERADAS:\n${sourceList}`;
+}
+
 async function analyzeWithGemini(
   apiKey: string,
   model: string,
@@ -181,43 +192,57 @@ async function analyzeWithGemini(
     if (!response.ok) {
       throw new ApiError(payloadMessage(payload, "Falha na API do Gemini."), response.status);
     }
-    return { text: geminiText(payload), sources: [] as AiSource[] };
-  }
-
-  const interactionResponse = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/interactions",
-    {
-      method: "POST",
-      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        input: `${systemInstruction}\n\n${prompt}`,
-        tools: [{ type: "google_search" }],
-      }),
-      signal: AbortSignal.timeout(55_000),
-    },
-  );
-  const interactionPayload = (await interactionResponse.json().catch(() => ({}))) as Record<
-    string,
-    unknown
-  >;
-
-  if (interactionResponse.ok) {
     return {
-      text: geminiText(interactionPayload),
-      sources: uniqueSources(collectSources(interactionPayload)),
+      text: geminiText(payload),
+      sources: [] as AiSource[],
+      notice: "Relatório gerado sem pesquisa web. Foram usados os dados de mercado fornecidos pelo aplicativo e o conhecimento do modelo.",
     };
   }
-  if (isQuotaFailure(interactionResponse.status, interactionPayload)) {
-    throw new ApiError(geminiQuotaMessage, 429);
+
+  const researchModel = model.startsWith("gemini-2.5") ? model : "gemini-2.5-flash";
+  const research = await geminiGenerate(apiKey, researchModel, prompt, true);
+  if (!research.response.ok) {
+    if (isQuotaFailure(research.response.status, research.payload)) {
+      throw new ApiError(geminiQuotaMessage, 429);
+    }
+    throw new ApiError(
+      payloadMessage(research.payload, "Falha na pesquisa do Gemini."),
+      research.response.status,
+    );
   }
 
-  const { response, payload } = await geminiGenerate(apiKey, model, prompt, true);
-  if (!response.ok) {
-    if (isQuotaFailure(response.status, payload)) throw new ApiError(geminiQuotaMessage, 429);
-    throw new ApiError(payloadMessage(payload, "Falha na API do Gemini."), response.status);
+  const researchText = geminiText(research.payload);
+  const sources = uniqueSources(collectSources(research.payload));
+  if (!researchText.trim()) {
+    throw new ApiError("O Gemini não retornou conteúdo de pesquisa.", 502);
   }
-  return { text: geminiText(payload), sources: uniqueSources(collectSources(payload)) };
+
+  if (researchModel === model) {
+    return {
+      text: researchText,
+      sources,
+      notice: `Pesquisa e relatório gerados pelo ${researchModel} com Google Search.`,
+    };
+  }
+
+  const synthesis = await geminiGenerate(
+    apiKey,
+    model,
+    synthesisPrompt(researchText, sources),
+    false,
+  );
+  if (!synthesis.response.ok) {
+    throw new ApiError(
+      payloadMessage(synthesis.payload, "Falha na síntese do Gemini."),
+      synthesis.response.status,
+    );
+  }
+
+  return {
+    text: geminiText(synthesis.payload),
+    sources,
+    notice: `Pesquisa realizada pelo ${researchModel}; relatório final organizado pelo ${model}.`,
+  };
 }
 
 export async function POST(request: Request) {
@@ -240,7 +265,7 @@ export async function POST(request: Request) {
 
     const webSearch = provider === "openai" || body.webSearch === true;
     const model = body.model?.trim() ||
-      (provider === "openai" ? "gpt-5-mini" : "gemini-3.5-flash");
+      (provider === "openai" ? "gpt-5-mini" : "gemini-2.5-flash");
     const prompt = buildPrompt(body, webSearch);
     const result = provider === "openai"
       ? await analyzeWithOpenAI(apiKey, model, prompt)
@@ -254,9 +279,6 @@ export async function POST(request: Request) {
       model,
       generatedAt: new Date().toISOString(),
       webSearchUsed: webSearch,
-      notice: webSearch
-        ? undefined
-        : "Relatório gerado sem pesquisa web. Foram usados os dados de mercado fornecidos pelo aplicativo e o conhecimento do modelo.",
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Erro inesperado na análise.";
