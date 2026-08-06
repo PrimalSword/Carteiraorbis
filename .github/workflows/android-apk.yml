@@ -34,7 +34,6 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
-          cache: gradle
 
       - name: Preparar Python
         uses: actions/setup-python@v6
