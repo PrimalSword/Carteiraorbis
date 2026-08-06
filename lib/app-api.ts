@@ -18,7 +18,7 @@ Estruture a resposta em Markdown com os títulos: Resumo executivo; O que mudou 
 Não use tabelas excessivamente largas e jamais invente números.`;
 
 const geminiQuotaMessage =
-  "A chave do Gemini foi aceita, mas o projeto não tem cota disponível para pesquisa com Google Search. No plano gratuito, desative ‘Pesquisar na internet com Google Search’ na aba Conta. Para relatórios com notícias e documentos atuais, ative o faturamento do projeto Gemini ou use GPT com pesquisa web.";
+  "A chave do Gemini foi aceita, mas a cota gratuita de pesquisa do projeto foi atingida ou não está disponível. O Gemini 2.5 Flash e o Flash-Lite compartilham o limite gratuito de até 500 pesquisas fundamentadas por dia. Aguarde a renovação da cota, confira o projeto vinculado à chave ou desative temporariamente a pesquisa web na aba Conta.";
 
 function parseData(value: unknown): JsonObject {
   if (value && typeof value === "object") return value as JsonObject;
@@ -255,6 +255,33 @@ function geminiText(payload: JsonObject): string {
   return text.join("\n\n");
 }
 
+async function nativeGeminiGenerate(
+  apiKey: string,
+  model: string,
+  prompt: string,
+  includeSearch: boolean,
+): Promise<AppApiResult<JsonObject>> {
+  return nativeRequest(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    {
+      method: "POST",
+      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+      data: {
+        contents: [{ parts: [{ text: `${systemInstruction}\n\n${prompt}` }] }],
+        ...(includeSearch ? { tools: [{ google_search: {} }] } : {}),
+      },
+      timeout: 60_000,
+    },
+  );
+}
+
+function synthesisPrompt(researchText: string, sources: AiSource[]): string {
+  const sourceList = sources.length
+    ? sources.map((source, index) => `${index + 1}. ${source.title}: ${source.url}`).join("\n")
+    : "Nenhuma URL estruturada foi recuperada; preserve apenas afirmações presentes na pesquisa.";
+  return `Redija o relatório final usando exclusivamente a pesquisa fundamentada abaixo e os dados de mercado nela incluídos. Preserve datas, números, ressalvas e URLs. Não acrescente acontecimentos que não estejam na pesquisa. Diferencie fatos, cálculos, interpretações e pontos de atenção.\n\nPESQUISA FUNDAMENTADA:\n${researchText}\n\nFONTES RECUPERADAS:\n${sourceList}`;
+}
+
 async function nativeAnalysis(body: JsonObject): Promise<AppApiResult<JsonObject>> {
   const provider: AiProvider = body.provider === "gemini" ? "gemini" : "openai";
   const apiKey = String(body.apiKey ?? "").trim();
@@ -270,9 +297,11 @@ async function nativeAnalysis(body: JsonObject): Promise<AppApiResult<JsonObject
 
   const webSearch = provider === "openai" || body.webSearch === true;
   const prompt = buildPrompt({ ...body, webSearch });
-  const model = String(body.model ?? (provider === "openai" ? "gpt-5-mini" : "gemini-3.5-flash"));
+  const model = String(body.model ?? (provider === "openai" ? "gpt-5-mini" : "gemini-2.5-flash"));
   let response: AppApiResult<JsonObject>;
   let text = "";
+  let sources: AiSource[] = [];
+  let notice: string | undefined;
 
   if (provider === "openai") {
     response = await nativeRequest("https://api.openai.com/v1/responses", {
@@ -288,50 +317,48 @@ async function nativeAnalysis(body: JsonObject): Promise<AppApiResult<JsonObject
       timeout: 60_000,
     });
     text = openAiText(response.data);
+    sources = collectSources(response.data);
   } else if (webSearch) {
-    response = await nativeRequest("https://generativelanguage.googleapis.com/v1beta/interactions", {
-      method: "POST",
-      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-      data: { model, input: `${systemInstruction}\n\n${prompt}`, tools: [{ type: "google_search" }] },
-      timeout: 60_000,
-    });
+    const researchModel = model.startsWith("gemini-2.5") ? model : "gemini-2.5-flash";
+    const researchResponse = await nativeGeminiGenerate(apiKey, researchModel, prompt, true);
 
-    if (!response.ok && isQuotaFailure(response)) {
+    if (!researchResponse.ok && isQuotaFailure(researchResponse)) {
       return { ok: false, status: 429, data: { error: geminiQuotaMessage } };
     }
-
-    if (!response.ok) {
-      response = await nativeRequest(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-        {
-          method: "POST",
-          headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-          data: {
-            contents: [{ parts: [{ text: `${systemInstruction}\n\n${prompt}` }] }],
-            tools: [{ google_search: {} }],
-          },
-          timeout: 60_000,
-        },
-      );
-    }
-
-    if (!response.ok && isQuotaFailure(response)) {
-      return { ok: false, status: 429, data: { error: geminiQuotaMessage } };
-    }
-    text = geminiText(response.data);
-  } else {
-    response = await nativeRequest(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: "POST",
-        headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+    if (!researchResponse.ok) {
+      return {
+        ...researchResponse,
         data: {
-          contents: [{ parts: [{ text: `${systemInstruction}\n\n${prompt}` }] }],
+          ...researchResponse.data,
+          error: payloadMessage(researchResponse.data, "Falha na pesquisa do Gemini."),
         },
-        timeout: 60_000,
-      },
-    );
+      };
+    }
+
+    const researchText = geminiText(researchResponse.data);
+    sources = collectSources(researchResponse.data);
+    if (!researchText.trim()) {
+      return { ok: false, status: 502, data: { error: "O Gemini não retornou conteúdo de pesquisa." } };
+    }
+
+    if (researchModel === model) {
+      response = researchResponse;
+      text = researchText;
+      notice = `Pesquisa e relatório gerados pelo ${researchModel} com Google Search.`;
+    } else {
+      response = await nativeGeminiGenerate(
+        apiKey,
+        model,
+        synthesisPrompt(researchText, sources),
+        false,
+      );
+      text = geminiText(response.data);
+      notice = `Pesquisa realizada pelo ${researchModel}; relatório final organizado pelo ${model}.`;
+    }
+  } else {
+    response = await nativeGeminiGenerate(apiKey, model, prompt, false);
     text = geminiText(response.data);
+    notice = "Relatório gerado sem pesquisa web. Foram usados os dados de mercado fornecidos pelo aplicativo e o conhecimento do modelo.";
   }
 
   if (!response.ok) {
@@ -352,14 +379,12 @@ async function nativeAnalysis(body: JsonObject): Promise<AppApiResult<JsonObject
     status: 200,
     data: {
       text,
-      sources: webSearch ? collectSources(response.data) : [],
+      sources: webSearch ? sources : [],
       provider,
       model,
       generatedAt: new Date().toISOString(),
       webSearchUsed: webSearch,
-      notice: webSearch
-        ? undefined
-        : "Relatório gerado sem pesquisa web. Foram usados os dados de mercado fornecidos pelo aplicativo e o conhecimento do modelo.",
+      notice,
     },
   };
 }
