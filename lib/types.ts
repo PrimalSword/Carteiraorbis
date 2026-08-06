@@ -78,6 +78,7 @@ export interface AccountSettings {
   openaiModel: string;
   geminiModel: string;
   geminiWebSearch: boolean;
+  geminiSearchVersion: number;
   rememberKeys: boolean;
   displayName: string;
 }
